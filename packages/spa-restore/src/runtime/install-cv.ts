@@ -183,12 +183,14 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     }));
   };
 
-  document.addEventListener('scrollend', onScrollend);
+  // scrollend on window (not document): Safari historically inconsistent about bubbling
+  // scrollend through the document, and {passive:true} avoids the default-passive ambiguity.
+  window.addEventListener('scrollend', onScrollend, { passive: true });
   document.addEventListener('astro:before-swap', onBeforeSwap);
   document.addEventListener('astro:after-swap', onAfterSwap);
 
   return () => {
-    document.removeEventListener('scrollend', onScrollend);
+    window.removeEventListener('scrollend', onScrollend);
     document.removeEventListener('astro:before-swap', onBeforeSwap);
     document.removeEventListener('astro:after-swap', onAfterSwap);
     cvRestoreCtrl.abort();
