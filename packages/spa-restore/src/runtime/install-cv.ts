@@ -37,9 +37,36 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   // → page shrinks → router's scrollTo(savedY) gets clamped. We override in astro:after-swap
   // (same microtask as router's scrollTo → no visible flash).
   let cvRestoreCtrl = new AbortController();
+  // Top-level controller fires on dispose() — cancels every tracked setTimeout so
+  // late timer callbacks can never mutate state after the integration is torn down.
+  const disposeCtrl = new AbortController();
   const cvHeightsCache = new Map<string, CvCacheEntry>();
   let cvRestoring = false;
   let scrollendTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // setTimeout that auto-cancels when any of the supplied AbortSignals fires.
+  // Used to track the cvRestoring-reset and overflow-anchor-reset timers so rapid
+  // back/forward nav cannot let a stale earlier timer clobber a later restore, and
+  // dispose() guarantees no late callback ever runs.
+  const setTimeoutAbortable = (
+    fn: () => void,
+    ms: number,
+    ...signals: AbortSignal[]
+  ): ReturnType<typeof setTimeout> => {
+    const id = setTimeout(() => {
+      for (const s of signals) s.removeEventListener('abort', onAbort);
+      fn();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(id);
+      for (const s of signals) s.removeEventListener('abort', onAbort);
+    };
+    for (const s of signals) {
+      if (s.aborted) { clearTimeout(id); return id; }
+      s.addEventListener('abort', onAbort, { once: true });
+    }
+    return id;
+  };
   // history.state.scrollY is an Astro internal (not public API). Warn once if Astro
   // ever changes the shape — without this the package silently degrades to scroll-0.
   let warnedMissingScrollY = false;
@@ -110,8 +137,10 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
 
     // Block scrollend from overwriting the cache during back-nav settle.
+    // Auto-cancel on next swap (sig) or dispose so rapid nav can't have an earlier
+    // timer flip cvRestoring=false mid second restore → cache pollution.
     cvRestoring = true;
-    setTimeout(() => { cvRestoring = false; }, restoringWindowMs);
+    setTimeoutAbortable(() => { cvRestoring = false; }, restoringWindowMs, sig, disposeCtrl.signal);
 
     // Attempt 0: bake heights saved by the scrollend listener (captured when scroll
     // settled at this position — exact layout at save time). Reproduces the layout so
@@ -161,10 +190,9 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
           });
         }
         scrollTo({ top: targetY, left: sx, behavior: 'instant' });
-        setTimeout(() => {
-          if (sig.aborted) return;
+        setTimeoutAbortable(() => {
           cvEls.forEach(el => { el.style.overflowAnchor = ''; });
-        }, anchorResetMs);
+        }, anchorResetMs, sig, disposeCtrl.signal);
       });
       return;
     }
@@ -222,6 +250,10 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     document.removeEventListener('astro:before-swap', onBeforeSwap);
     document.removeEventListener('astro:after-swap', onAfterSwap);
     cvRestoreCtrl.abort();
+    // Aborts every tracked setTimeoutAbortable callback (cvRestoring reset + anchor
+    // reset). Without this, late timers can mutate state after the integration is
+    // disposed.
+    disposeCtrl.abort();
     if (scrollendTimer) clearTimeout(scrollendTimer);
   };
 }
