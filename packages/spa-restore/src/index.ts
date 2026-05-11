@@ -11,7 +11,8 @@ export interface SpaRestoreOptions extends CvOpts, AlpineOpts {
   injectStyles?: boolean;
 }
 
-const PKG = '@alfredwesterveld/astro-spa-restore';
+const _require = createRequire(import.meta.url);
+const PKG = (_require('../package.json') as { name: string }).name;
 
 // Conservative identifier shapes for values that get interpolated into CSS
 // selectors at runtime by ./runtime/install-cv + ./runtime/install-alpine.
