@@ -98,6 +98,67 @@ describe('spaRestore — emitted runtime escaping (bead swz)', () => {
   });
 });
 
+describe('spaRestore — emitted runtime composition', () => {
+  it('default emits CSS import + cv runtime import + cv install call', () => {
+    const integration = spaRestore();
+    const code = runSetup(integration)[0]!;
+    // Style import (default injectStyles=true).
+    expect(code).toContain("import '@alfredwesterveld/astro-spa-restore/styles/cv-auto.css';");
+    // CV runtime import + call (always present).
+    expect(code).toContain("import { installCvScrollRestore } from '@alfredwesterveld/astro-spa-restore/runtime/cv';");
+    expect(code).toContain('installCvScrollRestore(');
+    // Alpine NOT included by default.
+    expect(code).not.toContain('installAlpineLifecycle');
+    expect(code).not.toContain("/runtime/alpine'");
+  });
+
+  it('injectStyles=false omits the CSS import line', () => {
+    const integration = spaRestore({ injectStyles: false });
+    const code = runSetup(integration)[0]!;
+    expect(code).not.toContain('cv-auto.css');
+    // Other imports still present.
+    expect(code).toContain('installCvScrollRestore(');
+  });
+
+  it('alpine=true adds the alpine import + install call (when alpinejs is resolvable)', () => {
+    const integration = spaRestore({ alpine: true });
+    let code: string | undefined;
+    try {
+      code = runSetup(integration)[0];
+    } catch (e) {
+      // Same fallback as the bead 3ze suite — accept the throw if alpinejs
+      // is not resolvable from this workspace.
+      expect((e as Error).message).toContain('alpinejs');
+      return;
+    }
+    expect(code).toContain("import { installAlpineLifecycle } from '@alfredwesterveld/astro-spa-restore/runtime/alpine';");
+    expect(code).toContain('installAlpineLifecycle(');
+  });
+
+  it('alpine=true + custom persistAttribute is forwarded into the alpine install call', () => {
+    const integration = spaRestore({ alpine: true, persistAttribute: 'data-keep' });
+    let code: string | undefined;
+    try {
+      code = runSetup(integration)[0];
+    } catch (e) {
+      expect((e as Error).message).toContain('alpinejs');
+      return;
+    }
+    expect(code).toContain('installAlpineLifecycle(');
+    expect(code).toContain('"persistAttribute":"data-keep"');
+  });
+
+  it('alpine=false (default) emits an empty alpine-options object on no install call (no leak of persistAttribute alone)', () => {
+    // With alpine omitted, persistAttribute (if validated) must NOT cause any
+    // alpine import/call to be emitted — the integration still validates the
+    // attribute (defense in depth), but does not invoke install-alpine.
+    const integration = spaRestore({ persistAttribute: 'data-keep' });
+    const code = runSetup(integration)[0]!;
+    expect(code).not.toContain('installAlpineLifecycle');
+    expect(code).not.toContain('persistAttribute');
+  });
+});
+
 describe('spaRestore — alpine fail-fast (bead 3ze)', () => {
   it('does not require alpinejs when alpine is false', () => {
     const integration = spaRestore({ alpine: false });

@@ -187,6 +187,128 @@ describe('installAlpineLifecycle — Alpine missing warning (m3w)', () => {
   });
 });
 
+describe('installAlpineLifecycle — persist-walk detach/destroy/reattach (deep)', () => {
+  it('detaches a deeply-nested (3+ levels) persisted node before destroying its ancestor', () => {
+    // Fixture:
+    // <body>
+    //   <section id="root">                        ← top-level child, must be destroyed
+    //     <div id="lvl2">
+    //       <article id="lvl3">
+    //         <span id="persisted" data-astro-transition-persist />
+    //       </article>
+    //     </div>
+    //   </section>
+    // </body>
+    const root = document.createElement('section');
+    root.id = 'root';
+    const lvl2 = document.createElement('div');
+    lvl2.id = 'lvl2';
+    const lvl3 = document.createElement('article');
+    lvl3.id = 'lvl3';
+    const persisted = document.createElement('span');
+    persisted.id = 'persisted';
+    persisted.setAttribute('data-astro-transition-persist', '');
+    lvl3.appendChild(persisted);
+    lvl2.appendChild(lvl3);
+    root.appendChild(lvl2);
+    document.body.appendChild(root);
+
+    const destroyed: string[] = [];
+    let persistedReachableDuringDestroy: boolean | undefined;
+    window.Alpine = makeAlpineStub({
+      destroyImpl: (el) => {
+        destroyed.push((el as Element).id);
+        if ((el as Element).id === 'root') {
+          // Real Alpine.destroyTree deep-walks this subtree — assert the
+          // persisted node is NOT reachable from the ancestor at this point.
+          persistedReachableDuringDestroy = (el as Element).contains(persisted);
+        }
+      },
+    });
+    teardown = installAlpineLifecycle();
+
+    document.dispatchEvent(new Event('astro:before-swap'));
+
+    expect(destroyed).toContain('root');
+    expect(destroyed).not.toContain('persisted');
+    expect(persistedReachableDuringDestroy).toBe(false);
+
+    // After the handler completes, the persisted node is re-attached at its
+    // original location (inside lvl3, inside lvl2, inside root).
+    expect(lvl3.contains(persisted)).toBe(true);
+    expect(persisted.parentNode).toBe(lvl3);
+  });
+
+  it('preserves multiple persisted nodes at different depths in a single swap', () => {
+    // Fixture:
+    // <body>
+    //   <section id="A">
+    //     <span id="persistA" data-astro-transition-persist />          ← depth 1
+    //   </section>
+    //   <article id="B">
+    //     <div>
+    //       <p id="persistB" data-astro-transition-persist />            ← depth 2
+    //     </div>
+    //   </article>
+    //   <main id="C">                                                    ← no persisted descendants
+    //   </main>
+    // </body>
+    const a = document.createElement('section');
+    a.id = 'A';
+    const persistA = document.createElement('span');
+    persistA.id = 'persistA';
+    persistA.setAttribute('data-astro-transition-persist', '');
+    a.appendChild(persistA);
+
+    const b = document.createElement('article');
+    b.id = 'B';
+    const inner = document.createElement('div');
+    const persistB = document.createElement('p');
+    persistB.id = 'persistB';
+    persistB.setAttribute('data-astro-transition-persist', '');
+    inner.appendChild(persistB);
+    b.appendChild(inner);
+
+    const c = document.createElement('main');
+    c.id = 'C';
+
+    document.body.append(a, b, c);
+
+    const destroyed: string[] = [];
+    const reachableSnapshot: Record<string, { hasA: boolean; hasB: boolean }> = {};
+    window.Alpine = makeAlpineStub({
+      destroyImpl: (el) => {
+        const id = (el as Element).id;
+        destroyed.push(id);
+        reachableSnapshot[id] = {
+          hasA: (el as Element).contains(persistA),
+          hasB: (el as Element).contains(persistB),
+        };
+      },
+    });
+    teardown = installAlpineLifecycle();
+
+    document.dispatchEvent(new Event('astro:before-swap'));
+
+    // All three top-level children destroyed; neither persisted node destroyed.
+    expect(destroyed).toEqual(['A', 'B', 'C']);
+    expect(destroyed).not.toContain('persistA');
+    expect(destroyed).not.toContain('persistB');
+
+    // Persisted descendants must be unreachable from their ancestors at the
+    // moment destroyTree fires — otherwise real Alpine's deep walker tears
+    // them down via cleanup hooks.
+    expect(reachableSnapshot['A']!.hasA).toBe(false);
+    expect(reachableSnapshot['B']!.hasB).toBe(false);
+
+    // After the handler completes, both persisted nodes are re-attached at
+    // their original positions and the surrounding structure is intact.
+    expect(persistA.parentNode).toBe(a);
+    expect(persistB.parentNode).toBe(inner);
+    expect(inner.parentNode).toBe(b);
+  });
+});
+
 describe('installAlpineLifecycle — initTree on after-swap', () => {
   it('calls Alpine.initTree(document.body) when Alpine is present', () => {
     const stub = makeAlpineStub();
