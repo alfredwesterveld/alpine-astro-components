@@ -1,0 +1,17 @@
+@layer utilities {
+  .cv-auto {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 800px;
+  }
+  /* Applied by install-cv runtime during back-nav to force full layout height.
+     Removed after measurement. Safari needs this since it lacks
+     contentvisibilityautostatechange — rect-flush alone may not flush on first paint. */
+  .cv-auto.cv-auto-restore-flush {
+    content-visibility: visible;
+    contain-intrinsic-size: unset;
+    /* Restore cv:auto's implicit on-screen containment (layout style paint) so
+       getBoundingClientRect() measures the same height as cv:auto-active.
+       Without this, internal margins collapse differently → heights are wrong. */
+    contain: layout style paint;
+  }
+}

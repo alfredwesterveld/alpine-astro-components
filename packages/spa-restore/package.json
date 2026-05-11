@@ -1,0 +1,47 @@
+{
+  "name": "@alfredwesterveld/astro-spa-restore",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Astro integration: cv-auto scroll-restore + Alpine destroy/init lifecycle for ClientRouter view-transition swaps.",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "src/styles",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./runtime/cv": {
+      "types": "./dist/runtime/install-cv.d.ts",
+      "default": "./dist/runtime/install-cv.js"
+    },
+    "./runtime/alpine": {
+      "types": "./dist/runtime/install-alpine.d.ts",
+      "default": "./dist/runtime/install-alpine.js"
+    },
+    "./runtime/scroll-restore": {
+      "types": "./dist/runtime/cv-scroll-restore.d.ts",
+      "default": "./dist/runtime/cv-scroll-restore.js"
+    },
+    "./styles/cv-auto.css": "./src/styles/cv-auto.css"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "test": "bun test tests/"
+  },
+  "peerDependencies": {
+    "astro": "^6",
+    "alpinejs": "^3"
+  },
+  "peerDependenciesMeta": {
+    "alpinejs": { "optional": true }
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.9.0",
+    "astro": "^6.0.0",
+    "typescript": "^5"
+  }
+}
