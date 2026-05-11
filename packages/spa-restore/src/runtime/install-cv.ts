@@ -129,12 +129,35 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
       );
     }
     const targetY = state?.scrollY ?? 0;
-    if (targetY === 0) return;
 
     const sig = cvRestoreCtrl.signal;
     const sx = state?.scrollX ?? 0;
     const cachedEntry = cvHeightsCache.get(cvCacheKey()) ?? null;
     const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
+
+    // Reject cache if length OR fingerprint differs — protects against reordered sections
+    // silently mapping wrong heights onto wrong elements.
+    const hasCachedHeights =
+      cachedEntry !== null &&
+      cvEls.length === cachedEntry.heights.length &&
+      cvFingerprint(cvEls) === cachedEntry.fingerprint;
+    const savedCvHeights = hasCachedHeights ? cachedEntry!.heights : null;
+
+    // targetY===0 (top of page, or history.state may legitimately be null on first
+    // SPA nav): no scrollTo needed, but still bake cached intrinsic-sizes so that
+    // any subsequent programmatic scroll (anchor click, focus, etc.) lands correctly.
+    // Skip the restoring flag + rAF re-pin chain since there's no overshoot risk.
+    if (targetY === 0) {
+      if (hasCachedHeights && savedCvHeights) {
+        cvEls.forEach((el, i) => {
+          if (savedCvHeights[i] > 0) {
+            const c = contentHeight(el, savedCvHeights[i]);
+            if (c > 0) el.style.setProperty('contain-intrinsic-size', `auto ${c}px`);
+          }
+        });
+      }
+      return;
+    }
 
     // Block scrollend from overwriting the cache during back-nav settle.
     // Auto-cancel on next swap (sig) or dispose so rapid nav can't have an earlier
@@ -147,13 +170,6 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     // scrollTo(targetY) lands on the correct element. flushAndFix is NOT used here:
     // it toggles content-visibility:visible which drops cv:auto's implicit containment
     // → sections measure ~128px shorter → scroll-anchor drift displaces mid-page targets.
-    // Reject cache if length OR fingerprint differs — protects against reordered sections
-    // silently mapping wrong heights onto wrong elements.
-    const hasCachedHeights =
-      cachedEntry !== null &&
-      cvEls.length === cachedEntry.heights.length &&
-      cvFingerprint(cvEls) === cachedEntry.fingerprint;
-    const savedCvHeights = hasCachedHeights ? cachedEntry!.heights : null;
     if (hasCachedHeights && savedCvHeights) {
       // Explicit `height` bypasses cv:auto's contain-intrinsic-size resolution timing:
       // setting contain-intrinsic-size alone doesn't update scrollHeight synchronously
