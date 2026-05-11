@@ -71,11 +71,11 @@ describe('installAlpineLifecycle — destroyTree walk', () => {
     expect(destroyed).toEqual(['a', 'b', 'c']);
   });
 
-  it('persist-walk (6a9): destroys ancestor of persist node but not the persist node itself', () => {
+  it('persist-walk (6a9): destroys ancestor but detaches persisted descendant first so real Alpine.destroyTree (deep walker) cannot reach it', () => {
     // Fixture from bead:
     // <body>
     //   <section x-data>                                  ← must be destroyed
-    //     <div data-astro-transition-persist x-data />    ← must be skipped
+    //     <div data-astro-transition-persist x-data />    ← must be skipped (and detached during destroy)
     //   </section>
     //   <article x-data />                                ← must be destroyed
     // </body>
@@ -92,19 +92,34 @@ describe('installAlpineLifecycle — destroyTree walk', () => {
     document.body.append(section, article);
 
     const destroyed: string[] = [];
+    // Track whether the persisted node was attached to `section` at the moment
+    // destroyTree(section) fires. With real Alpine, destroyTree walks
+    // descendants and runs cleanup hooks on every reachable Alpine node, so
+    // the persisted descendant MUST be detached first.
+    let persistedReachableDuringDestroy: boolean | undefined;
     window.Alpine = makeAlpineStub({
       destroyImpl: (el) => {
         destroyed.push((el as Element).id);
+        if ((el as Element).id === 'section') {
+          persistedReachableDuringDestroy = (el as Element).contains(persisted);
+        }
       },
     });
     teardown = installAlpineLifecycle();
 
     document.dispatchEvent(new Event('astro:before-swap'));
 
-    // Ancestor destroyed; persisted descendant skipped; sibling destroyed.
+    // Ancestor destroyed; persisted descendant never has destroyTree called on it.
     expect(destroyed).toContain('section');
     expect(destroyed).toContain('article');
     expect(destroyed).not.toContain('persisted');
+    // Persisted descendant must be detached before its ancestor is destroyed,
+    // otherwise real Alpine's deep walker would tear down its state.
+    expect(persistedReachableDuringDestroy).toBe(false);
+    // After the handler completes, the persisted node is re-attached at its
+    // original location so Astro's view-transition can find + move it.
+    expect(section.contains(persisted)).toBe(true);
+    expect(persisted.parentNode).toBe(section);
   });
 
   it('persist-walk: persisted root skips entirely (no recurse, no destroy of itself)', () => {

@@ -42,24 +42,25 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
     }
     warnedMissing = false;
     Alpine.mutateDom(() => {
-      // Post-order walk: recurse into each non-persisted child first, then
-      // destroy that child (so its own Alpine state + @.window listeners are
-      // released even when it contains a persisted descendant). Persisted
-      // nodes themselves are skipped entirely (no recurse, no destroy).
-      const walk = (root: Element): void => {
-        // Snapshot children to a static array — destroyTree mutates the DOM
-        // and a live HTMLCollection would cause sibling skips during iteration.
-        for (const child of [...root.children]) {
-          if (child.hasAttribute(persistAttr)) continue;
-          if (child.querySelector(persistSel)) {
-            // Has persisted descendants — recurse to skip them, then destroy
-            // this ancestor so its own Alpine state is released.
-            walk(child);
-          }
-          Alpine.destroyTree(child);
-        }
-      };
-      walk(document.body);
+      // Detach persisted subtrees behind comment placeholders so that
+      // Alpine.destroyTree (which deep-walks via the default walker and is
+      // persist-blind) cannot reach their cleanup hooks. We then destroyTree
+      // every non-persisted top-level child (releasing its own state +
+      // @.window listeners), then re-insert the persisted nodes at their
+      // original positions so Astro's view-transition can move them into the
+      // new body.
+      const persisted = [...document.body.querySelectorAll(persistSel)] as Element[];
+      const slots = persisted.map((node) => {
+        const ph = document.createComment('astro-spa-restore:persist');
+        node.parentNode!.replaceChild(ph, node);
+        return { ph, node };
+      });
+      for (const child of [...document.body.children]) {
+        Alpine.destroyTree(child);
+      }
+      for (const { ph, node } of slots) {
+        ph.parentNode!.replaceChild(node, ph);
+      }
     });
   };
 
