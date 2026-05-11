@@ -19,6 +19,13 @@ export interface CvOpts {
 }
 
 type CvCacheEntry = { fingerprint: string; heights: number[] };
+// Snapshot of consumer-controlled inline styles per cv element, captured BEFORE
+// the first mutation we make. Hoisted to module scope so snapStyles /
+// restoreStyles share a single canonical shape.
+type StyleSnap = { height: string; intrinsic: string; anchor: string };
+// Astro's history.state shape for scroll-restore. Astro internal (not public
+// API) — warn once at runtime if the shape ever changes.
+type HS = { scrollY?: number; scrollX?: number };
 
 /**
  * Wires window listeners that restore scroll position across Astro ClientRouter
@@ -44,7 +51,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   // Snapshot of consumer-controlled inline styles per cv element, captured BEFORE
   // the first mutation we make. The package contract: never destructively clobber
   // consumer values. After the restore window ends we put these originals back.
-  type StyleSnap = { height: string; intrinsic: string; anchor: string };
+  // (Type StyleSnap hoisted to module scope.)
   const cvStyleSnaps = new WeakMap<HTMLElement, StyleSnap>();
   const snapStyles = (els: HTMLElement[]) => {
     for (const el of els) {
@@ -175,7 +182,6 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
 
   const onAfterSwap = () => {
     try {
-    type HS = { scrollY?: number; scrollX?: number };
     const state = history.state as HS | null;
     if (!warnedMissingScrollY && (state == null || !('scrollY' in state))) {
       warnedMissingScrollY = true;
