@@ -135,6 +135,15 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const cachedEntry = cvHeightsCache.get(cvCacheKey()) ?? null;
     const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
 
+    // In a backgrounded tab, requestAnimationFrame is throttled to seconds-long
+    // intervals (or paused entirely). Fall back to setTimeout(0) so the restore
+    // chain still runs promptly and the user doesn't see a late visible scroll
+    // jump when they refocus the tab.
+    const raf: (fn: FrameRequestCallback) => void =
+      document.visibilityState === 'hidden'
+        ? (fn) => { setTimeout(() => fn(performance.now()), 0); }
+        : requestAnimationFrame;
+
     // Reject cache if length OR fingerprint differs — protects against reordered sections
     // silently mapping wrong heights onto wrong elements.
     const hasCachedHeights =
@@ -189,7 +198,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
       // overflow-anchor still default, makes the browser shift scrollY to keep the visual
       // anchor stable — overshooting the restore. Wait one rAF, lock anchors first, then
       // switch and re-pin atomically.
-      requestAnimationFrame(() => {
+      raf(() => {
         if (sig.aborted) return;
         cvEls.forEach(el => {
           const r = el.getBoundingClientRect();
@@ -228,7 +237,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     }
 
     // Attempt 2: double-rAF retry (gives browser an additional layout cycle)
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    raf(() => raf(() => {
       if (sig.aborted) return;
       const fresh = [...document.querySelectorAll<HTMLElement>(cvSelector)];
       const maxY2 = flushAndFix(fresh, undefined, flushClass);
