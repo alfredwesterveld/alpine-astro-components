@@ -7,7 +7,11 @@ export interface CvOpts {
   flushClass?: string;
   /** Debounce before scrollend captures cv heights into the cache. Default 200ms. */
   scrollendDebounceMs?: number;
-  /** Window during which scrollend cache writes are blocked after restore. Default 500ms. */
+  /**
+   * Window during which scrollend cache writes are blocked after restore. Default 200ms.
+   * NOTE: a timeout is a stop-gap — the real fix is signal-binding the release to the
+   * end of the restore rAF chain so legitimate post-restore scrolls aren't dropped.
+   */
   restoringWindowMs?: number;
   /** Window during which off-screen overflow-anchor is suppressed after restore. Default 1500ms. */
   anchorResetMs?: number;
@@ -24,7 +28,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   const cvClass = opts.cvClass ?? 'cv-auto';
   const flushClass = opts.flushClass ?? 'cv-auto-restore-flush';
   const scrollendDebounceMs = opts.scrollendDebounceMs ?? 200;
-  const restoringWindowMs = opts.restoringWindowMs ?? 500;
+  const restoringWindowMs = opts.restoringWindowMs ?? 200;
   const anchorResetMs = opts.anchorResetMs ?? 1500;
   const cvSelector = `.${cvClass}`;
 
