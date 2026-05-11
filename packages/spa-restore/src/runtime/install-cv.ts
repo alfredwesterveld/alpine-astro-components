@@ -257,9 +257,14 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
             fresh.forEach(el => el.removeEventListener('contentvisibilityautostatechange', onUnskip));
           }
         };
-        fresh.forEach(el => {
+        // Re-check sig.aborted before each attach: an abort fired between the rAF
+        // frames or partway through the loop would otherwise leave listeners bound
+        // to an already-aborted signal (browsers still attach, then drop on first
+        // dispatch — silent leak until DOM removal).
+        for (const el of fresh) {
+          if (sig.aborted) break;
           el.addEventListener('contentvisibilityautostatechange', onUnskip, { signal: sig });
-        });
+        }
       }
     }));
   };
