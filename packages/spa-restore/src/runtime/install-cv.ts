@@ -86,8 +86,20 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     }
   };
 
-  const cvFingerprint = (els: HTMLElement[]) =>
-    els.map(el => el.id || el.getAttribute('aria-labelledby') || el.tagName).join('|');
+  // Per-element fingerprint: prefer an explicit data-cv-key (consumer convention),
+  // then id / aria-labelledby, then tag + first 32 chars of the first h1/h2/h3
+  // textContent. The heading slice catches the common case of unkeyed <section>
+  // elements being reordered or content-swapped — without it, three sibling
+  // <section> tags fingerprint identically and a height-array shift maps the
+  // wrong heights onto the wrong sections.
+  const cvElKey = (el: HTMLElement): string => {
+    const explicit = el.dataset.cvKey || el.id || el.getAttribute('aria-labelledby');
+    if (explicit) return explicit;
+    const h = el.querySelector('h1,h2,h3');
+    const text = h?.textContent?.trim().slice(0, 32) ?? '';
+    return text ? `${el.tagName}:${text}` : el.tagName;
+  };
+  const cvFingerprint = (els: HTMLElement[]) => els.map(cvElKey).join('|');
 
   // Save cv-auto heights whenever scroll settles, keyed by pathname.
   // Captures exact layout heights at the position the user leaves from,
