@@ -36,6 +36,9 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   const cvHeightsCache = new Map<string, CvCacheEntry>();
   let cvRestoring = false;
   let scrollendTimer: ReturnType<typeof setTimeout> | null = null;
+  // history.state.scrollY is an Astro internal (not public API). Warn once if Astro
+  // ever changes the shape — without this the package silently degrades to scroll-0.
+  let warnedMissingScrollY = false;
 
   const cvFingerprint = (els: HTMLElement[]) =>
     els.map(el => el.id || el.getAttribute('aria-labelledby') || el.tagName).join('|');
@@ -73,6 +76,12 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   const onAfterSwap = () => {
     type HS = { scrollY?: number; scrollX?: number };
     const state = history.state as HS | null;
+    if (!warnedMissingScrollY && (state == null || !('scrollY' in state))) {
+      warnedMissingScrollY = true;
+      console.warn(
+        '[@alfredwesterveld/astro-spa-restore] history.state.scrollY missing — Astro may have changed its scroll-state shape. Scroll restoration will fall back to top of page.',
+      );
+    }
     const targetY = state?.scrollY ?? 0;
     if (targetY === 0) return;
 
