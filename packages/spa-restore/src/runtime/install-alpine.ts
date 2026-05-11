@@ -35,43 +35,54 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
   };
 
   const onBeforeSwap = () => {
-    const Alpine = (window as W).Alpine;
-    if (!Alpine) {
-      warnAlpineMissing('before-swap');
-      return;
-    }
-    warnedMissing = false;
-    Alpine.mutateDom(() => {
-      // Detach persisted subtrees behind comment placeholders so that
-      // Alpine.destroyTree (which deep-walks via the default walker and is
-      // persist-blind) cannot reach their cleanup hooks. We then destroyTree
-      // every non-persisted top-level child (releasing its own state +
-      // @.window listeners), then re-insert the persisted nodes at their
-      // original positions so Astro's view-transition can move them into the
-      // new body.
-      const persisted = [...document.body.querySelectorAll(persistSel)] as Element[];
-      const slots = persisted.map((node) => {
-        const ph = document.createComment('astro-spa-restore:persist');
-        node.parentNode!.replaceChild(ph, node);
-        return { ph, node };
+    try {
+      const Alpine = (window as W).Alpine;
+      if (!Alpine) {
+        warnAlpineMissing('before-swap');
+        return;
+      }
+      warnedMissing = false;
+      Alpine.mutateDom(() => {
+        // Detach persisted subtrees behind comment placeholders so that
+        // Alpine.destroyTree (which deep-walks via the default walker and is
+        // persist-blind) cannot reach their cleanup hooks. We then destroyTree
+        // every non-persisted top-level child (releasing its own state +
+        // @.window listeners), then re-insert the persisted nodes at their
+        // original positions so Astro's view-transition can move them into the
+        // new body.
+        const persisted = [...document.body.querySelectorAll(persistSel)] as Element[];
+        const slots = persisted.map((node) => {
+          const ph = document.createComment('astro-spa-restore:persist');
+          node.parentNode!.replaceChild(ph, node);
+          return { ph, node };
+        });
+        for (const child of [...document.body.children]) {
+          Alpine.destroyTree(child);
+        }
+        for (const { ph, node } of slots) {
+          ph.parentNode!.replaceChild(node, ph);
+        }
       });
-      for (const child of [...document.body.children]) {
-        Alpine.destroyTree(child);
-      }
-      for (const { ph, node } of slots) {
-        ph.parentNode!.replaceChild(node, ph);
-      }
-    });
+    } catch (err) {
+      // Re-emit, don't swallow: a throw inside a consumer's Alpine cleanup
+      // hook (or a poisoned mutateDom) shouldn't break the swap or surface as
+      // an uncaught exception that fails e2e runners.
+      console.error('[astro-spa-restore]', err);
+    }
   };
 
   const onAfterSwap = () => {
-    const Alpine = (window as W).Alpine;
-    if (!Alpine) {
-      warnAlpineMissing('after-swap');
-      return;
+    try {
+      const Alpine = (window as W).Alpine;
+      if (!Alpine) {
+        warnAlpineMissing('after-swap');
+        return;
+      }
+      warnedMissing = false;
+      Alpine.initTree(document.body);
+    } catch (err) {
+      console.error('[astro-spa-restore]', err);
     }
-    warnedMissing = false;
-    Alpine.initTree(document.body);
   };
 
   document.addEventListener('astro:before-swap', onBeforeSwap);
