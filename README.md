@@ -6,7 +6,7 @@ Reusable Astro + Alpine.js building blocks. Bun workspaces monorepo.
 
 | Package | What |
 |---|---|
-| [`@alfredwesterveld/astro-spa-restore`](./packages/spa-restore) | Astro integration: cv-auto scroll-restore + Alpine destroy/init lifecycle for `<ClientRouter />` view-transition swaps. |
+| [`@alfred.westerveld/astro-spa-restore`](./packages/spa-restore) | Astro integration: cv-auto scroll-restore + Alpine destroy/init lifecycle for `<ClientRouter />` view-transition swaps. |
 
 ## Develop
 
@@ -21,7 +21,7 @@ bun run test            # test all packages
 From a sibling project:
 
 ```bash
-bun add @alfredwesterveld/astro-spa-restore@file:../path/to/alpine-astro-components/packages/spa-restore
+bun add @alfred.westerveld/astro-spa-restore@file:../path/to/alpine-astro-components/packages/spa-restore
 ```
 
 After editing package source, rebuild before the consumer picks up changes:
