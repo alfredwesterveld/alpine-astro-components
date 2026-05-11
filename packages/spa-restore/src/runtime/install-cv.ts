@@ -281,7 +281,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     sig: AbortSignal,
     raf: (fn: FrameRequestCallback) => void,
   ): void => {
-    raf(() => raf(() => {
+    raf(() => queueMicrotask(() => {
       if (sig.aborted) return;
       const fresh = [...document.querySelectorAll<HTMLElement>(cvSelector)];
       const maxY2 = flushAndFix(fresh, undefined, flushClass);
