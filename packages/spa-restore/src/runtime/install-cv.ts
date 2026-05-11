@@ -132,33 +132,48 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   // Captures exact layout heights at the position the user leaves from,
   // so after-swap can bake them back and scrollTo lands on the right element.
   const onScrollend = () => {
-    if (cvRestoring) return;
-    const key = cvCacheKey();
-    if (scrollendTimer) clearTimeout(scrollendTimer);
-    // Defer so cv:auto can re-evaluate and collapse off-screen sections.
-    // scrollend fires before cv:auto's intersection re-check runs — sections recently
-    // scrolled past still show rendered heights. After settle they match the layout
-    // that produced the saved scrollY.
-    scrollendTimer = setTimeout(() => {
-      scrollendTimer = null;
+    try {
       if (cvRestoring) return;
-      if (cvCacheKey() !== key) return;
-      const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
-      if (cvEls.length === 0) return;
-      cvCacheSet(key, {
-        fingerprint: cvFingerprint(cvEls),
-        heights: cvEls.map(el => Math.round(el.getBoundingClientRect().height)),
-      });
-    }, scrollendDebounceMs);
+      const key = cvCacheKey();
+      if (scrollendTimer) clearTimeout(scrollendTimer);
+      // Defer so cv:auto can re-evaluate and collapse off-screen sections.
+      // scrollend fires before cv:auto's intersection re-check runs — sections recently
+      // scrolled past still show rendered heights. After settle they match the layout
+      // that produced the saved scrollY.
+      scrollendTimer = setTimeout(() => {
+        try {
+          scrollendTimer = null;
+          if (cvRestoring) return;
+          if (cvCacheKey() !== key) return;
+          const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
+          if (cvEls.length === 0) return;
+          cvCacheSet(key, {
+            fingerprint: cvFingerprint(cvEls),
+            heights: cvEls.map(el => Math.round(el.getBoundingClientRect().height)),
+          });
+        } catch (err) {
+          console.error('[astro-spa-restore]', err);
+        }
+      }, scrollendDebounceMs);
+    } catch (err) {
+      console.error('[astro-spa-restore]', err);
+    }
   };
 
   const onBeforeSwap = () => {
-    cvRestoreCtrl.abort();
-    cvRestoreCtrl = new AbortController();
-    if (scrollendTimer) { clearTimeout(scrollendTimer); scrollendTimer = null; }
+    try {
+      cvRestoreCtrl.abort();
+      cvRestoreCtrl = new AbortController();
+      if (scrollendTimer) { clearTimeout(scrollendTimer); scrollendTimer = null; }
+    } catch (err) {
+      // Re-emit, don't swallow: throws here would otherwise surface as
+      // uncaught exceptions and break e2e runners that fail on any unhandled error.
+      console.error('[astro-spa-restore]', err);
+    }
   };
 
   const onAfterSwap = () => {
+    try {
     type HS = { scrollY?: number; scrollX?: number };
     const state = history.state as HS | null;
     if (!warnedMissingScrollY && (state == null || !('scrollY' in state))) {
@@ -329,6 +344,12 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
         }
       }
     }));
+    } catch (err) {
+      // Re-emit, don't swallow: a throw here (poisoned history.state, broken
+      // querySelectorAll, consumer styles that crash getComputedStyle) would
+      // otherwise break the swap and surface as an uncaught exception.
+      console.error('[astro-spa-restore]', err);
+    }
   };
 
   // scrollend on window (not document): Safari historically inconsistent about bubbling
