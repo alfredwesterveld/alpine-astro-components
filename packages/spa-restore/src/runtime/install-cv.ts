@@ -40,6 +40,33 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   // Top-level controller fires on dispose() — cancels every tracked setTimeout so
   // late timer callbacks can never mutate state after the integration is torn down.
   const disposeCtrl = new AbortController();
+  // Snapshot of consumer-controlled inline styles per cv element, captured BEFORE
+  // the first mutation we make. The package contract: never destructively clobber
+  // consumer values. After the restore window ends we put these originals back.
+  type StyleSnap = { height: string; intrinsic: string; anchor: string };
+  const cvStyleSnaps = new WeakMap<HTMLElement, StyleSnap>();
+  const snapStyles = (els: HTMLElement[]) => {
+    for (const el of els) {
+      if (cvStyleSnaps.has(el)) continue;
+      cvStyleSnaps.set(el, {
+        height: el.style.height,
+        intrinsic: el.style.getPropertyValue('contain-intrinsic-size'),
+        anchor: el.style.overflowAnchor,
+      });
+    }
+  };
+  const restoreStyles = (els: HTMLElement[], which: ReadonlyArray<keyof StyleSnap>) => {
+    for (const el of els) {
+      const snap = cvStyleSnaps.get(el);
+      if (!snap) continue;
+      if (which.includes('height')) el.style.height = snap.height;
+      if (which.includes('intrinsic')) {
+        if (snap.intrinsic) el.style.setProperty('contain-intrinsic-size', snap.intrinsic);
+        else el.style.removeProperty('contain-intrinsic-size');
+      }
+      if (which.includes('anchor')) el.style.overflowAnchor = snap.anchor;
+    }
+  };
   const cvHeightsCache = new Map<string, CvCacheEntry>();
   let cvRestoring = false;
   let scrollendTimer: ReturnType<typeof setTimeout> | null = null;
@@ -170,6 +197,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     // Skip the restoring flag + rAF re-pin chain since there's no overshoot risk.
     if (targetY === 0) {
       if (hasCachedHeights && savedCvHeights) {
+        snapStyles(cvEls);
         cvEls.forEach((el, i) => {
           if (savedCvHeights[i] > 0) {
             const c = contentHeight(el, savedCvHeights[i]);
@@ -182,9 +210,20 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
 
     // Block scrollend from overwriting the cache during back-nav settle.
     // Auto-cancel on next swap (sig) or dispose so rapid nav can't have an earlier
-    // timer flip cvRestoring=false mid second restore → cache pollution.
+    // timer flip cvRestoring=false mid second restore → cache pollution. The same
+    // window also bounds when we restore consumer-controlled inline values that we
+    // overwrote during the bake.
     cvRestoring = true;
-    setTimeoutAbortable(() => { cvRestoring = false; }, restoringWindowMs, sig, disposeCtrl.signal);
+    setTimeoutAbortable(() => {
+      cvRestoring = false;
+      // If consumer had an explicit contain-intrinsic-size, theirs wins now that
+      // the load-bearing bake has done its job. (Empty consumer value → leave our
+      // bake in place; cv:auto's intersection observer has classified by now.)
+      for (const el of cvEls) {
+        const snap = cvStyleSnaps.get(el);
+        if (snap?.intrinsic) el.style.setProperty('contain-intrinsic-size', snap.intrinsic);
+      }
+    }, restoringWindowMs, sig, disposeCtrl.signal);
 
     // Attempt 0: bake heights saved by the scrollend listener (captured when scroll
     // settled at this position — exact layout at save time). Reproduces the layout so
@@ -192,6 +231,9 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     // it toggles content-visibility:visible which drops cv:auto's implicit containment
     // → sections measure ~128px shorter → scroll-anchor drift displaces mid-page targets.
     if (hasCachedHeights && savedCvHeights) {
+      // Snapshot consumer-controlled inline values BEFORE the first mutation so we
+      // can restore them later instead of clobbering with empty strings.
+      snapStyles(cvEls);
       // Explicit `height` bypasses cv:auto's contain-intrinsic-size resolution timing:
       // setting contain-intrinsic-size alone doesn't update scrollHeight synchronously
       // (intersection observer hasn't re-classified sections yet at after-swap time).
@@ -212,13 +254,19 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
       // switch and re-pin atomically.
       raf(() => {
         if (sig.aborted) return;
+        // Snapshot before first overflowAnchor mutation (covers the hasCachedHeights=false
+        // path where we never snapshot earlier).
+        snapStyles(cvEls);
         cvEls.forEach(el => {
           const r = el.getBoundingClientRect();
           if (r.bottom <= 0 || r.top >= innerHeight) el.style.overflowAnchor = 'none';
         });
         if (hasCachedHeights && savedCvHeights) {
           cvEls.forEach((el, i) => {
-            el.style.height = '';
+            // Restore consumer height instead of clearing — the explicit-height
+            // bridge has done its job; intrinsic-size takes over below.
+            const snap = cvStyleSnaps.get(el);
+            el.style.height = snap ? snap.height : '';
             el.style.removeProperty('contain-intrinsic-size');
             if (savedCvHeights[i] > 0) {
               const c = contentHeight(el, savedCvHeights[i]);
@@ -228,7 +276,8 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
         }
         scrollTo({ top: targetY, left: sx, behavior: 'instant' });
         setTimeoutAbortable(() => {
-          cvEls.forEach(el => { el.style.overflowAnchor = ''; });
+          // Restore consumer overflowAnchor instead of clearing.
+          restoreStyles(cvEls, ['anchor']);
         }, anchorResetMs, sig, disposeCtrl.signal);
       });
       return;
@@ -237,7 +286,8 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     // Page too short → fall through to flush-and-bake. Covers deep-scroll where saved
     // heights ARE the large values and the page genuinely needs expanding.
     if (hasCachedHeights) {
-      for (const el of cvEls) el.style.height = '';
+      // Restore consumer height instead of clearing (we set it in the bake above).
+      restoreStyles(cvEls, ['height']);
     }
     if (cvEls.length === 0) return;
 
