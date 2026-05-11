@@ -69,10 +69,10 @@ describe('install-cv error boundary (od4)', () => {
       document.dispatchEvent(new Event('astro:after-swap'));
     }).not.toThrow();
 
-    // console.error called with the package prefix and the underlying error.
+    // console.error called with the package-prefixed label and the underlying error.
     const calls = errorSpy!.mock.calls;
     expect(calls.length).toBe(1);
-    expect(calls[0][0]).toBe('[astro-spa-restore]');
+    expect(calls[0][0] as string).toContain('[astro-spa-restore]');
     expect((calls[0][1] as Error).message).toBe('poisoned-history-state');
   });
 });
@@ -94,7 +94,7 @@ describe('install-alpine error boundary (od4)', () => {
 
     const calls = errorSpy!.mock.calls;
     expect(calls.length).toBe(1);
-    expect(calls[0][0]).toBe('[astro-spa-restore]');
+    expect(calls[0][0] as string).toContain('[astro-spa-restore]');
     expect((calls[0][1] as Error).message).toBe('mutate-dom-boom');
   });
 
@@ -114,7 +114,7 @@ describe('install-alpine error boundary (od4)', () => {
 
     const calls = errorSpy!.mock.calls;
     expect(calls.length).toBe(1);
-    expect(calls[0][0]).toBe('[astro-spa-restore]');
+    expect(calls[0][0] as string).toContain('[astro-spa-restore]');
     expect((calls[0][1] as Error).message).toBe('init-tree-boom');
   });
 

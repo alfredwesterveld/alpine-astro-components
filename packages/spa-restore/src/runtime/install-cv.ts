@@ -1,4 +1,5 @@
 import { flushAndFix, contentHeight } from './cv-scroll-restore';
+import { log } from './log';
 
 export interface CvOpts {
   /** CSS class on sections that use content-visibility:auto. Default 'cv-auto'. */
@@ -152,11 +153,11 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
             heights: cvEls.map(el => Math.round(el.getBoundingClientRect().height)),
           });
         } catch (err) {
-          console.error('[astro-spa-restore]', err);
+          log('error', 'scrollend-handler-throw', err);
         }
       }, scrollendDebounceMs);
     } catch (err) {
-      console.error('[astro-spa-restore]', err);
+      log('error', 'scrollend-handler-throw', err);
     }
   };
 
@@ -168,7 +169,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     } catch (err) {
       // Re-emit, don't swallow: throws here would otherwise surface as
       // uncaught exceptions and break e2e runners that fail on any unhandled error.
-      console.error('[astro-spa-restore]', err);
+      log('error', 'before-swap-handler-throw', err);
     }
   };
 
@@ -178,8 +179,9 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const state = history.state as HS | null;
     if (!warnedMissingScrollY && (state == null || !('scrollY' in state))) {
       warnedMissingScrollY = true;
-      console.warn(
-        '[@alfredwesterveld/astro-spa-restore] history.state.scrollY missing — Astro may have changed its scroll-state shape. Scroll restoration will fall back to top of page.',
+      log(
+        'warn',
+        'history.state.scrollY missing — Astro may have changed its scroll-state shape. Scroll restoration will fall back to top of page.',
       );
     }
     const targetY = state?.scrollY ?? 0;
@@ -348,7 +350,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
       // Re-emit, don't swallow: a throw here (poisoned history.state, broken
       // querySelectorAll, consumer styles that crash getComputedStyle) would
       // otherwise break the swap and surface as an uncaught exception.
-      console.error('[astro-spa-restore]', err);
+      log('error', 'after-swap-handler-throw', err);
     }
   };
 
