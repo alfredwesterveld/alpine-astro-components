@@ -43,6 +43,21 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   // history.state.scrollY is an Astro internal (not public API). Warn once if Astro
   // ever changes the shape — without this the package silently degrades to scroll-0.
   let warnedMissingScrollY = false;
+  // LRU cap to prevent unbounded growth across long sessions.
+  const CV_CACHE_MAX = 32;
+  // Key by pathname+search (hash excluded — anchor-only nav doesn't change layout):
+  // /a?x=1 and /a?x=2 are distinct pages with distinct heights.
+  const cvCacheKey = () => location.pathname + location.search;
+  const cvCacheSet = (key: string, entry: CvCacheEntry) => {
+    // Re-insert to bump LRU position.
+    if (cvHeightsCache.has(key)) cvHeightsCache.delete(key);
+    cvHeightsCache.set(key, entry);
+    while (cvHeightsCache.size > CV_CACHE_MAX) {
+      const oldest = cvHeightsCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      cvHeightsCache.delete(oldest);
+    }
+  };
 
   const cvFingerprint = (els: HTMLElement[]) =>
     els.map(el => el.id || el.getAttribute('aria-labelledby') || el.tagName).join('|');
@@ -52,7 +67,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   // so after-swap can bake them back and scrollTo lands on the right element.
   const onScrollend = () => {
     if (cvRestoring) return;
-    const path = location.pathname;
+    const key = cvCacheKey();
     if (scrollendTimer) clearTimeout(scrollendTimer);
     // Defer so cv:auto can re-evaluate and collapse off-screen sections.
     // scrollend fires before cv:auto's intersection re-check runs — sections recently
@@ -61,10 +76,10 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     scrollendTimer = setTimeout(() => {
       scrollendTimer = null;
       if (cvRestoring) return;
-      if (location.pathname !== path) return;
+      if (cvCacheKey() !== key) return;
       const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
       if (cvEls.length === 0) return;
-      cvHeightsCache.set(path, {
+      cvCacheSet(key, {
         fingerprint: cvFingerprint(cvEls),
         heights: cvEls.map(el => Math.round(el.getBoundingClientRect().height)),
       });
@@ -91,7 +106,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
 
     const sig = cvRestoreCtrl.signal;
     const sx = state?.scrollX ?? 0;
-    const cachedEntry = cvHeightsCache.get(location.pathname) ?? null;
+    const cachedEntry = cvHeightsCache.get(cvCacheKey()) ?? null;
     const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
 
     // Block scrollend from overwriting the cache during back-nav settle.
