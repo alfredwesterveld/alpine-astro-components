@@ -1,6 +1,6 @@
 {
   "name": "@alfredwesterveld/astro-spa-restore",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Astro integration: cv-auto scroll-restore + Alpine destroy/init lifecycle for ClientRouter view-transition swaps.",
   "license": "MIT",
