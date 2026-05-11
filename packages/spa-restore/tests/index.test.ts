@@ -88,13 +88,11 @@ describe('spaRestore — emitted runtime escaping (bead swz)', () => {
     expect(code).not.toContain('</script>');
   });
 
-  it('contains the ClientRouter guard (bead tzh)', () => {
+  it('does not emit stopImmediatePropagation guard', () => {
     const integration = spaRestore();
     const scripts = runSetup(integration);
     const code = scripts[0]!;
-    expect(code).toContain("astro:before-swap");
-    expect(code).toContain("astro:after-swap");
-    expect(code).toContain("stopImmediatePropagation");
+    expect(code).not.toContain('stopImmediatePropagation');
   });
 });
 

@@ -28,17 +28,11 @@ function validate(name: string, value: unknown, re: RegExp): void {
 }
 
 // JSON.stringify is *not* safe for embedding directly inside a <script> body:
-//  - "</script>" inside a string closes the script tag
-//  - U+2028 / U+2029 are valid JSON but illegal raw inside a JS string literal
-//    (they terminate lines per ECMAScript pre-ES2019 and still break some
-//    parsers/minifiers).
-// Escape all three so the emitted runtime is safe regardless of the option
-// string's contents (and regardless of how Astro inlines the script).
+//  - "</script>" inside a string closes the script tag.
+// JSON.stringify already escapes U+2028 / U+2029 as of ES2019, so we only
+// need to guard the script-tag breaker.
 function safeJson(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/</g, '\\u003c')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+  return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
 export default function spaRestore(options: SpaRestoreOptions = {}): AstroIntegration {
@@ -65,30 +59,7 @@ export default function spaRestore(options: SpaRestoreOptions = {}): AstroIntegr
     calls.push(`installAlpineLifecycle(${safeJson(alpineOpts)});`);
   }
 
-  // ClientRouter detection (bead tzh): on pages without <ClientRouter />, the
-  // `astro:before-swap` event never fires, but `astro:after-swap` could in
-  // principle be dispatched by other code (or future Astro changes), so we
-  // gate it. Strategy: a capture-phase listener on `astro:after-swap` short-
-  // circuits all other handlers (stopImmediatePropagation) until we've seen
-  // at least one real `astro:before-swap`, OR until 5s after load have passed
-  // (after which we trust that no ClientRouter is active and continue gating
-  // forever — pages that never use view transitions stay inert).
-  //
-  // We use a timer rather than feature-detecting <astro-island> because a
-  // page can opt into ClientRouter without using any islands — that would
-  // false-negative on those pages.
-  const guard = `(() => {
-  let crSeen = false, deadline = false;
-  document.addEventListener('astro:before-swap', () => { crSeen = true; }, { capture: true });
-  setTimeout(() => { deadline = true; }, 5000);
-  document.addEventListener('astro:after-swap', (e) => {
-    if (!crSeen && deadline) {
-      e.stopImmediatePropagation();
-    }
-  }, { capture: true });
-})();`;
-
-  const script = [guard, ...imports, ...calls].join('\n');
+  const script = [...imports, ...calls].join('\n');
 
   return {
     name: PKG,

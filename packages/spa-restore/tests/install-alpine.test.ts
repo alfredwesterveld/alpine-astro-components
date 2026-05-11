@@ -321,3 +321,20 @@ describe('installAlpineLifecycle — initTree on after-swap', () => {
     expect(stub.initTree.mock.calls[0][0]).toBe(document.body);
   });
 });
+
+describe('installAlpineLifecycle — nested persisted elements', () => {
+  it('does not crash when persisted elements are nested', () => {
+    const outer = document.createElement('div');
+    outer.setAttribute('data-astro-transition-persist', '');
+    const inner = document.createElement('span');
+    inner.setAttribute('data-astro-transition-persist', '');
+    outer.appendChild(inner);
+    document.body.appendChild(outer);
+
+    window.Alpine = makeAlpineStub();
+    teardown = installAlpineLifecycle();
+
+    expect(() => document.dispatchEvent(new Event('astro:before-swap'))).not.toThrow();
+    expect(outer.contains(inner)).toBe(true);
+  });
+});

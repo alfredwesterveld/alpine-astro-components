@@ -1,14 +1,15 @@
 const FLUSH_CLASS = 'cv-auto-restore-flush';
 
 // contain-intrinsic-size sizes the CONTENT box. getBoundingClientRect returns the
-// BORDER box (padding + content). When a cv:auto section is skipped, browser
-// computes outer = padding-top + intrinsic-size + padding-bottom — so baking
-// border-box height into intrinsic-size makes skipped sections render too tall
-// by exactly their vertical padding (e.g. py-16 → +128px per section).
+// BORDER box (content + padding + border). When a cv:auto section is skipped, browser
+// computes outer = padding-top + intrinsic-size + padding-bottom + border-top + border-bottom
+// — so baking border-box height into intrinsic-size makes skipped sections render too tall
+// by exactly their vertical padding + borders.
 export function contentHeight(el: HTMLElement, boxHeight: number): number {
   const cs = getComputedStyle(el);
   const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-  return Math.max(0, boxHeight - padY);
+  const borderY = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+  return Math.max(0, boxHeight - padY - borderY);
 }
 
 /**

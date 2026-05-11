@@ -17,8 +17,8 @@ function makeEl(height: number, padY: number = 0): HTMLElement {
   return el;
 }
 
-// happy-dom's getComputedStyle doesn't reflect inline padding in computed values.
-// Override globally so contentHeight() can read the padding we set on test elements.
+// happy-dom's getComputedStyle doesn't reflect inline padding/border in computed values.
+// Override globally so contentHeight() can read the padding and borders we set on test elements.
 const origGetComputedStyle = globalThis.getComputedStyle;
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -27,6 +27,8 @@ beforeEach(() => {
     return {
       paddingTop: style.paddingTop || '0px',
       paddingBottom: style.paddingBottom || '0px',
+      borderTopWidth: style.borderTopWidth || '0px',
+      borderBottomWidth: style.borderBottomWidth || '0px',
     } as CSSStyleDeclaration;
   }) as typeof getComputedStyle;
 });
@@ -140,6 +142,14 @@ describe('flushAndFix', () => {
       flushAndFix([el], () => 0);
       expect(el.style.getPropertyValue('contain-intrinsic-size')).toBe('auto 500px');
     });
+
+    it('subtracts borders when baking intrinsic-size', () => {
+      const el = makeEl(500, 0);
+      el.style.borderTop = '5px solid black';
+      el.style.borderBottom = '5px solid black';
+      flushAndFix([el], () => 0);
+      expect(el.style.getPropertyValue('contain-intrinsic-size')).toBe('auto 490px');
+    });
   });
 
   describe('contentHeight helper', () => {
@@ -156,6 +166,20 @@ describe('flushAndFix', () => {
     it('clamps to 0 when padding > box height', () => {
       const el = makeEl(0, 500);
       expect(contentHeight(el, 200)).toBe(0);
+    });
+
+    it('subtracts borders in addition to padding', () => {
+      const el = makeEl(0, 0);
+      el.style.borderTop = '5px solid black';
+      el.style.borderBottom = '5px solid black';
+      expect(contentHeight(el, 500)).toBe(490);
+    });
+
+    it('clamps to 0 when padding + borders exceed box height', () => {
+      const el = makeEl(0, 100);
+      el.style.borderTop = '10px solid black';
+      el.style.borderBottom = '10px solid black';
+      expect(contentHeight(el, 100)).toBe(0);
     });
   });
 

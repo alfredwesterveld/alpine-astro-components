@@ -141,7 +141,8 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const text = h?.textContent?.trim().slice(0, 32) ?? '';
     return text ? `${el.tagName}:${text}` : el.tagName;
   };
-  const fingerprintCv = (els: HTMLElement[]) => els.map(cvElKey).join('|');
+  const fingerprintCv = (els: HTMLElement[]) =>
+    els.map(el => cvElKey(el).replace(/\|/g, '\\|')).join('|');
 
   // Save cv-auto heights whenever scroll settles, keyed by pathname.
   // Captures exact layout heights at the position the user leaves from,
@@ -218,7 +219,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const maxY0 = document.documentElement.scrollHeight - innerHeight;
     if (targetY > maxY0) return false;
 
-    scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+    window.scrollTo(sx, targetY);
     // Defer the explicit-height → intrinsic-size switch until after Alpine.initTree and
     // any other after-swap listeners have run. Switching synchronously causes a transient
     // scrollH drop: on-screen sections measure real content immediately, while off-screen
@@ -248,7 +249,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
           }
         });
       }
-      scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+      window.scrollTo(sx, targetY);
       setTimeoutAbortable(() => {
         // Restore consumer overflowAnchor instead of clearing.
         restoreStyles(cvEls, ['anchor']);
@@ -268,7 +269,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   ): boolean => {
     const maxY1 = flushAndFix(cvEls, undefined, flushClass);
     if (sig.aborted || targetY > maxY1) return false;
-    scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+    window.scrollTo(sx, targetY);
     return true;
   };
 
@@ -281,12 +282,12 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     sig: AbortSignal,
     raf: (fn: FrameRequestCallback) => void,
   ): void => {
-    raf(() => queueMicrotask(() => {
+    raf(() => raf(() => {
       if (sig.aborted) return;
       const fresh = [...document.querySelectorAll<HTMLElement>(cvSelector)];
       const maxY2 = flushAndFix(fresh, undefined, flushClass);
       if (targetY <= maxY2) {
-        scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+        window.scrollTo(sx, targetY);
         return;
       }
       attemptVisibilityRetry(fresh, targetY, sx, sig);
@@ -308,7 +309,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
       if (scrolled || sig.aborted) return;
       if (targetY <= document.documentElement.scrollHeight - innerHeight) {
         scrolled = true;
-        scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+        window.scrollTo(sx, targetY);
         fresh.forEach(el => el.removeEventListener('contentvisibilityautostatechange', onUnskip));
       }
     };
@@ -404,6 +405,10 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     }
     if (cvEls.length === 0) return;
 
+    // Snapshot before attempt-1 so flushAndFix can be reverted by the restoration
+    // timer even on the cache-miss path.
+    snapStyles(cvEls);
+
     // Attempt 1: synchronous flush in after-swap microtask.
     if (attemptSyncFlush(cvEls, targetY, sx, sig)) return;
 
@@ -419,12 +424,24 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
 
   // scrollend on window (not document): Safari historically inconsistent about bubbling
   // scrollend through the document, and {passive:true} avoids the default-passive ambiguity.
-  window.addEventListener('scrollend', onScrollend, { passive: true });
+  // Fallback to 'scroll' + debounce for browsers that don't support scrollend (Safari < 18).
+  const scrollSupported = 'onscrollend' in window;
+  const scrollEvent = scrollSupported ? 'scrollend' : 'scroll';
+  const scrollHandler = scrollSupported
+    ? onScrollend
+    : () => {
+        if (scrollendTimer) clearTimeout(scrollendTimer);
+        scrollendTimer = setTimeout(() => {
+          scrollendTimer = null;
+          onScrollend();
+        }, scrollendDebounceMs);
+      };
+  window.addEventListener(scrollEvent, scrollHandler, { passive: true });
   document.addEventListener('astro:before-swap', onBeforeSwap);
   document.addEventListener('astro:after-swap', onAfterSwap);
 
   return () => {
-    window.removeEventListener('scrollend', onScrollend);
+    window.removeEventListener(scrollEvent, scrollHandler);
     document.removeEventListener('astro:before-swap', onBeforeSwap);
     document.removeEventListener('astro:after-swap', onAfterSwap);
     cvRestoreCtrl.abort();

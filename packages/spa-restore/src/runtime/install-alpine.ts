@@ -52,7 +52,10 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
         // @.window listeners), then re-insert the persisted nodes at their
         // original positions so Astro's view-transition can move them into the
         // new body.
-        const persisted = [...document.body.querySelectorAll(persistSel)] as Element[];
+        // Reverse document order so nested persisted children are detached
+        // before their ancestors (otherwise the ancestor detachment leaves the
+        // child with a null parentNode and replaceChild crashes).
+        const persisted = [...document.body.querySelectorAll(persistSel)].reverse() as Element[];
         const slots = persisted.map((node) => {
           const ph = document.createComment('astro-spa-restore:persist');
           node.parentNode!.replaceChild(ph, node);

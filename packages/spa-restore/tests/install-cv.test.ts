@@ -86,6 +86,8 @@ beforeEach(() => {
     return {
       paddingTop: style.paddingTop || '0px',
       paddingBottom: style.paddingBottom || '0px',
+      borderTopWidth: style.borderTopWidth || '0px',
+      borderBottomWidth: style.borderBottomWidth || '0px',
     } as CSSStyleDeclaration;
   }) as typeof getComputedStyle;
 
@@ -317,9 +319,9 @@ describe('install-cv — after-swap restore fall-through', () => {
 
     const calls = scrollToSpy.mock.calls;
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    const firstCall = calls[0][0] as { top: number; left: number; behavior: string };
-    expect(firstCall.top).toBe(200);
-    expect(firstCall.behavior).toBe('instant');
+    // Positional scrollTo(sx, targetY) for Safari compatibility.
+    expect(calls[0][0]).toBe(0);
+    expect(calls[0][1]).toBe(200);
   });
 
   it('cache miss + short page → attempt-1 sync flushAndFix bakes intrinsic-size', () => {
@@ -335,6 +337,24 @@ describe('install-cv — after-swap restore fall-through', () => {
 
     // flushAndFix ran → measured 1500px → baked.
     expect(a.style.getPropertyValue('contain-intrinsic-size')).toBe('auto 1500px');
+  });
+
+  it('restores consumer inline contain-intrinsic-size after cache-miss flush', async () => {
+    const el = makeCv({ id: 'a', height: 400 });
+    el.style.setProperty('contain-intrinsic-size', 'auto 1234px');
+    // Make page short so attempt-0 fails and attempt-1 (flushAndFix) runs.
+    stubScrollHeight(500);
+    setHistoryState({ scrollY: 100 });
+
+    teardown = installCvScrollRestore({ restoringWindowMs: 30 });
+    document.dispatchEvent(new Event('astro:after-swap'));
+
+    // flushAndFix ran because there was no cache and the page was too short for attempt-0.
+    expect(el.style.getPropertyValue('contain-intrinsic-size')).not.toBe('auto 1234px');
+
+    // After restoring window expires, consumer value must be back.
+    await Bun.sleep(60);
+    expect(el.style.getPropertyValue('contain-intrinsic-size')).toBe('auto 1234px');
   });
 
   it('cache mismatch on length → discards cached entry, no stale heights applied', async () => {
@@ -368,6 +388,25 @@ describe('install-cv — after-swap restore fall-through', () => {
     document.dispatchEvent(new Event('astro:after-swap'));
 
     expect(swapped.style.getPropertyValue('contain-intrinsic-size')).toBe('');
+  });
+
+  it('fingerprint delimiter collision is escaped so different orderings do not match', async () => {
+    // Capture two sections whose keys concatenate to the same raw string.
+    const a = makeCv({ ariaH: 'Foo|Bar' });
+    const b = makeCv({ ariaH: 'Baz' });
+    teardown = installCvScrollRestore({ scrollendDebounceMs: 0 });
+    window.dispatchEvent(new Event('scrollend'));
+    await Bun.sleep(10);
+
+    // After-swap: same count, but reorder so naive concat would collide.
+    document.body.innerHTML = '';
+    const c = makeCv({ ariaH: 'Foo' });
+    const d = makeCv({ ariaH: 'Bar|Baz' });
+    setHistoryState({ scrollY: 0 });
+    document.dispatchEvent(new Event('astro:after-swap'));
+
+    expect(c.style.getPropertyValue('contain-intrinsic-size')).toBe('');
+    expect(d.style.getPropertyValue('contain-intrinsic-size')).toBe('');
   });
 });
 
@@ -573,6 +612,37 @@ describe('install-cv — preserves consumer inline styles across restore', () =>
 });
 
 // ---------------------------------------------------------------------------
+// scroll fallback for browsers without scrollend (Safari < 18)
+// ---------------------------------------------------------------------------
+describe('install-cv — scroll fallback for Safari < 18', () => {
+  it('uses scroll event + debounce when scrollend is unsupported', async () => {
+    // happy-dom supports scrollend, so we temporarily remove it before install.
+    const origScrollEnd = (window as unknown as Record<string, unknown>).onscrollend;
+    delete (window as unknown as Record<string, unknown>).onscrollend;
+
+    const el = makeCv({ id: 'a', height: 400 });
+    teardown = installCvScrollRestore({ scrollendDebounceMs: 0 });
+
+    // scrollend should not write because the listener is on 'scroll' instead.
+    window.dispatchEvent(new Event('scrollend'));
+    await Bun.sleep(10);
+
+    // Dispatch 'scroll' which triggers the fallback debounce.
+    window.dispatchEvent(new Event('scroll'));
+    await Bun.sleep(10);
+
+    // Verify the cache was populated by checking a targetY===0 after-swap bake.
+    document.body.innerHTML = '';
+    const fresh = makeCv({ id: 'a', height: 0 });
+    setHistoryState({ scrollY: 0 });
+    document.dispatchEvent(new Event('astro:after-swap'));
+    expect(fresh.style.getPropertyValue('contain-intrinsic-size')).toBe('auto 400px');
+
+    (window as unknown as Record<string, unknown>).onscrollend = origScrollEnd;
+  });
+});
+
+// ---------------------------------------------------------------------------
 // history.state.scrollY missing → warn-once (bead 67a)
 // ---------------------------------------------------------------------------
 describe('install-cv — history.state shape warning (bead 67a)', () => {
@@ -686,24 +756,27 @@ describe('install-cv — dispose + repeated lifecycle', () => {
 // attempt-2 (double-rAF) is scheduled when attempt-1 fails
 // ---------------------------------------------------------------------------
 describe('install-cv — attempt-2 double-rAF retry', () => {
-  it('attempt-1 fails (page too short even after flush) → schedules attempt-2 via rAF', () => {
+  it('attempt-1 fails (page too short even after flush) → schedules attempt-2 via nested rAF', () => {
     makeCv({ id: 'a', height: 100 });
     // Page is too short for both attempt-0 and attempt-1.
     stubScrollHeight(300);
     setHistoryState({ scrollY: 5000 });
 
     let rafCalls = 0;
-    globalThis.requestAnimationFrame = ((_fn: FrameRequestCallback) => {
+    const rafCallbacks: FrameRequestCallback[] = [];
+    globalThis.requestAnimationFrame = ((fn: FrameRequestCallback) => {
       rafCalls += 1;
+      rafCallbacks.push(fn);
       return rafCalls;
     }) as typeof requestAnimationFrame;
 
     teardown = installCvScrollRestore();
     document.dispatchEvent(new Event('astro:after-swap'));
 
-    // attempt-2 schedules an outer rAF (which then schedules an inner). We
-    // only see the outer because we never invoke the captured callback. The
-    // restoringWindow timer also queues, but rAF count is the indicator.
-    expect(rafCalls).toBeGreaterThanOrEqual(1);
+    // Outer rAF is registered immediately.
+    expect(rafCalls).toBe(1);
+    // Execute the outer callback to trigger the inner rAF registration.
+    rafCallbacks[0]?.(performance.now());
+    expect(rafCalls).toBe(2);
   });
 });
