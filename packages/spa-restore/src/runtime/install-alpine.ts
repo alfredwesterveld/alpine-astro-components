@@ -24,30 +24,52 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
   const persistAttr = opts.persistAttribute ?? 'data-astro-transition-persist';
   const persistSel = `[${persistAttr}]`;
 
+  // Warn at most once per "missing-Alpine" episode. Reset when Alpine reappears
+  // so a future disappearance can warn again.
+  let warnedMissing = false;
+
+  const warnAlpineMissing = (phase: 'before-swap' | 'after-swap'): void => {
+    if (warnedMissing) return;
+    warnedMissing = true;
+    console.warn(`[astro-spa-restore] Alpine missing on astro:${phase}`);
+  };
+
   const onBeforeSwap = () => {
     const Alpine = (window as W).Alpine;
-    if (!Alpine) return;
+    if (!Alpine) {
+      warnAlpineMissing('before-swap');
+      return;
+    }
+    warnedMissing = false;
     Alpine.mutateDom(() => {
-      (function destroyNonPersisted(root: Element) {
-        for (const child of root.children) {
+      // Post-order walk: recurse into each non-persisted child first, then
+      // destroy that child (so its own Alpine state + @.window listeners are
+      // released even when it contains a persisted descendant). Persisted
+      // nodes themselves are skipped entirely (no recurse, no destroy).
+      const walk = (root: Element): void => {
+        // Snapshot children to a static array — destroyTree mutates the DOM
+        // and a live HTMLCollection would cause sibling skips during iteration.
+        for (const child of [...root.children]) {
           if (child.hasAttribute(persistAttr)) continue;
           if (child.querySelector(persistSel)) {
-            // Has persisted descendants — recurse instead of destroying full subtree
-            destroyNonPersisted(child);
-          } else {
-            Alpine.destroyTree(child as Element);
+            // Has persisted descendants — recurse to skip them, then destroy
+            // this ancestor so its own Alpine state is released.
+            walk(child);
           }
+          Alpine.destroyTree(child);
         }
-      })(document.body);
+      };
+      walk(document.body);
     });
   };
 
   const onAfterSwap = () => {
     const Alpine = (window as W).Alpine;
     if (!Alpine) {
-      console.warn('[astro-spa-restore] Alpine missing on astro:after-swap');
+      warnAlpineMissing('after-swap');
       return;
     }
+    warnedMissing = false;
     Alpine.initTree(document.body);
   };
 
