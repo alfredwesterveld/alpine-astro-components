@@ -59,3 +59,22 @@ installAlpineLifecycle({});
 ```
 
 Both installers return a dispose function that detaches listeners.
+
+### Avoiding duplicate CSS
+
+`injectStyles` defaults to `true`, which auto-injects `cv-auto.css` via the integration. If you also import the stylesheet manually (e.g. `import '@alfredwesterveld/astro-spa-restore/styles/cv-auto.css'` in a layout, or pull it into a global stylesheet), set `injectStyles: false` on the integration to avoid emitting the same rules twice.
+
+## ClientRouter detection
+
+The injected runtime is inert on pages that don't use `<ClientRouter />`. It always attaches its window listeners, but a capture-phase guard suppresses `astro:after-swap` handlers until at least one real `astro:before-swap` event has fired (which only happens during a ClientRouter view-transition swap). If no swap is observed within 5 s of page load, the guard stays active for the rest of the page lifetime — so static MPA pages pay only the initial listener install cost.
+
+## Validation
+
+`cvClass`, `flushClass`, and `persistAttribute` are interpolated into CSS selectors and JS source at runtime. The integration validates them at `astro:config:setup`:
+
+- `cvClass` / `flushClass`: `/^[A-Za-z_-][\w-]*$/`
+- `persistAttribute`: `/^[a-z][a-z0-9-]*$/`
+
+Invalid values throw at build/dev startup with a clear error.
+
+When `alpine: true`, the integration also verifies that `alpinejs` is resolvable from your project root and throws at startup if it isn't, instead of warning silently at runtime.
