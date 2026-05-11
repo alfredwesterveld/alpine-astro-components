@@ -47,7 +47,14 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   let cvRestoreCtrl = new AbortController();
   // Top-level controller fires on dispose() — cancels every tracked setTimeout so
   // late timer callbacks can never mutate state after the integration is torn down.
-  const disposeCtrl = new AbortController();
+  // Lazily allocated on first use (first before-swap or first scheduled timeout)
+  // so MPA pages that never see a swap pay zero allocation cost beyond the
+  // listeners themselves.
+  let disposeCtrl: AbortController | undefined;
+  const ensureDisposeCtrl = (): AbortController => {
+    if (!disposeCtrl) disposeCtrl = new AbortController();
+    return disposeCtrl;
+  };
   // Snapshot of consumer-controlled inline styles per cv element, captured BEFORE
   // the first mutation we make. The package contract: never destructively clobber
   // consumer values. After the restore window ends we put these originals back.
@@ -170,6 +177,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
 
   const onBeforeSwap = () => {
     try {
+      ensureDisposeCtrl();
       cvRestoreCtrl.abort();
       cvRestoreCtrl = new AbortController();
       if (scrollendTimer) { clearTimeout(scrollendTimer); scrollendTimer = null; }
@@ -246,7 +254,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
         const snap = cvStyleSnaps.get(el);
         if (snap?.intrinsic) el.style.setProperty('contain-intrinsic-size', snap.intrinsic);
       }
-    }, restoringWindowMs, sig, disposeCtrl.signal);
+    }, restoringWindowMs, sig, ensureDisposeCtrl().signal);
 
     // Attempt 0: bake heights saved by the scrollend listener (captured when scroll
     // settled at this position — exact layout at save time). Reproduces the layout so
@@ -301,7 +309,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
         setTimeoutAbortable(() => {
           // Restore consumer overflowAnchor instead of clearing.
           restoreStyles(cvEls, ['anchor']);
-        }, anchorResetMs, sig, disposeCtrl.signal);
+        }, anchorResetMs, sig, ensureDisposeCtrl().signal);
       });
       return;
     }
@@ -373,8 +381,9 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     cvRestoreCtrl.abort();
     // Aborts every tracked setTimeoutAbortable callback (cvRestoring reset + anchor
     // reset). Without this, late timers can mutate state after the integration is
-    // disposed.
-    disposeCtrl.abort();
+    // disposed. May be undefined if dispose() is called before any swap was
+    // observed (MPA page or unused integration) — nothing to abort in that case.
+    disposeCtrl?.abort();
     if (scrollendTimer) clearTimeout(scrollendTimer);
   };
 }
