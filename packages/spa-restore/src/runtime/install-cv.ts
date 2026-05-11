@@ -1,4 +1,5 @@
 import { flushAndFix, contentHeight } from './cv-scroll-restore';
+import { log } from './log';
 
 export interface CvOpts {
   /** CSS class on sections that use content-visibility:auto. Default 'cv-auto'. */
@@ -18,6 +19,13 @@ export interface CvOpts {
 }
 
 type CvCacheEntry = { fingerprint: string; heights: number[] };
+// Snapshot of consumer-controlled inline styles per cv element, captured BEFORE
+// the first mutation we make. Hoisted to module scope so snapStyles /
+// restoreStyles share a single canonical shape.
+type StyleSnap = { height: string; intrinsic: string; anchor: string };
+// Astro's history.state shape for scroll-restore. Astro internal (not public
+// API) — warn once at runtime if the shape ever changes.
+type HS = { scrollY?: number; scrollX?: number };
 
 /**
  * Wires window listeners that restore scroll position across Astro ClientRouter
@@ -39,11 +47,18 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
   let cvRestoreCtrl = new AbortController();
   // Top-level controller fires on dispose() — cancels every tracked setTimeout so
   // late timer callbacks can never mutate state after the integration is torn down.
-  const disposeCtrl = new AbortController();
+  // Lazily allocated on first use (first before-swap or first scheduled timeout)
+  // so MPA pages that never see a swap pay zero allocation cost beyond the
+  // listeners themselves.
+  let disposeCtrl: AbortController | undefined;
+  const ensureDisposeCtrl = (): AbortController => {
+    if (!disposeCtrl) disposeCtrl = new AbortController();
+    return disposeCtrl;
+  };
   // Snapshot of consumer-controlled inline styles per cv element, captured BEFORE
   // the first mutation we make. The package contract: never destructively clobber
   // consumer values. After the restore window ends we put these originals back.
-  type StyleSnap = { height: string; intrinsic: string; anchor: string };
+  // (Type StyleSnap hoisted to module scope.)
   const cvStyleSnaps = new WeakMap<HTMLElement, StyleSnap>();
   const snapStyles = (els: HTMLElement[]) => {
     for (const el of els) {
@@ -126,7 +141,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const text = h?.textContent?.trim().slice(0, 32) ?? '';
     return text ? `${el.tagName}:${text}` : el.tagName;
   };
-  const cvFingerprint = (els: HTMLElement[]) => els.map(cvElKey).join('|');
+  const fingerprintCv = (els: HTMLElement[]) => els.map(cvElKey).join('|');
 
   // Save cv-auto heights whenever scroll settles, keyed by pathname.
   // Captures exact layout heights at the position the user leaves from,
@@ -148,38 +163,173 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
           const cvEls = [...document.querySelectorAll<HTMLElement>(cvSelector)];
           if (cvEls.length === 0) return;
           cvCacheSet(key, {
-            fingerprint: cvFingerprint(cvEls),
+            fingerprint: fingerprintCv(cvEls),
             heights: cvEls.map(el => Math.round(el.getBoundingClientRect().height)),
           });
         } catch (err) {
-          console.error('[astro-spa-restore]', err);
+          log('error', 'scrollend-handler-throw', err);
         }
       }, scrollendDebounceMs);
     } catch (err) {
-      console.error('[astro-spa-restore]', err);
+      log('error', 'scrollend-handler-throw', err);
     }
   };
 
   const onBeforeSwap = () => {
     try {
+      ensureDisposeCtrl();
       cvRestoreCtrl.abort();
       cvRestoreCtrl = new AbortController();
       if (scrollendTimer) { clearTimeout(scrollendTimer); scrollendTimer = null; }
     } catch (err) {
       // Re-emit, don't swallow: throws here would otherwise surface as
       // uncaught exceptions and break e2e runners that fail on any unhandled error.
-      console.error('[astro-spa-restore]', err);
+      log('error', 'before-swap-handler-throw', err);
+    }
+  };
+
+  // Attempt 0: bake heights saved by the scrollend listener (captured when scroll
+  // settled at this position — exact layout at save time). Reproduces the layout so
+  // scrollTo(targetY) lands on the correct element. flushAndFix is NOT used here:
+  // it toggles content-visibility:visible which drops cv:auto's implicit containment
+  // → sections measure ~128px shorter → scroll-anchor drift displaces mid-page targets.
+  // Returns true if the restore landed within this attempt (caller can return early).
+  const attemptCachedHeights = (
+    cvEls: HTMLElement[],
+    savedCvHeights: number[] | null,
+    hasCachedHeights: boolean,
+    targetY: number,
+    sx: number,
+    sig: AbortSignal,
+    raf: (fn: FrameRequestCallback) => void,
+  ): boolean => {
+    if (hasCachedHeights && savedCvHeights) {
+      // Snapshot consumer-controlled inline values BEFORE the first mutation so we
+      // can restore them later instead of clobbering with empty strings.
+      snapStyles(cvEls);
+      // Explicit `height` bypasses cv:auto's contain-intrinsic-size resolution timing:
+      // setting contain-intrinsic-size alone doesn't update scrollHeight synchronously
+      // (intersection observer hasn't re-classified sections yet at after-swap time).
+      cvEls.forEach((el, i) => {
+        if (savedCvHeights[i] > 0) el.style.height = `${savedCvHeights[i]}px`;
+      });
+    }
+
+    const maxY0 = document.documentElement.scrollHeight - innerHeight;
+    if (targetY > maxY0) return false;
+
+    scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+    // Defer the explicit-height → intrinsic-size switch until after Alpine.initTree and
+    // any other after-swap listeners have run. Switching synchronously causes a transient
+    // scrollH drop: on-screen sections measure real content immediately, while off-screen
+    // sections lag re-classification under cv:auto. That drop above the viewport, with
+    // overflow-anchor still default, makes the browser shift scrollY to keep the visual
+    // anchor stable — overshooting the restore. Wait one rAF, lock anchors first, then
+    // switch and re-pin atomically.
+    raf(() => {
+      if (sig.aborted) return;
+      // Snapshot before first overflowAnchor mutation (covers the hasCachedHeights=false
+      // path where we never snapshot earlier).
+      snapStyles(cvEls);
+      cvEls.forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (r.bottom <= 0 || r.top >= innerHeight) el.style.overflowAnchor = 'none';
+      });
+      if (hasCachedHeights && savedCvHeights) {
+        cvEls.forEach((el, i) => {
+          // Restore consumer height instead of clearing — the explicit-height
+          // bridge has done its job; intrinsic-size takes over below.
+          const snap = cvStyleSnaps.get(el);
+          el.style.height = snap ? snap.height : '';
+          el.style.removeProperty('contain-intrinsic-size');
+          if (savedCvHeights[i] > 0) {
+            const c = contentHeight(el, savedCvHeights[i]);
+            if (c > 0) el.style.setProperty('contain-intrinsic-size', `auto ${c}px`);
+          }
+        });
+      }
+      scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+      setTimeoutAbortable(() => {
+        // Restore consumer overflowAnchor instead of clearing.
+        restoreStyles(cvEls, ['anchor']);
+      }, anchorResetMs, sig, ensureDisposeCtrl().signal);
+    });
+    return true;
+  };
+
+  // Attempt 1: synchronous flush in the after-swap microtask (same task as the
+  // router's scrollTo). Returns true if the page is now tall enough and we have
+  // re-issued scrollTo to the saved position.
+  const attemptSyncFlush = (
+    cvEls: HTMLElement[],
+    targetY: number,
+    sx: number,
+    sig: AbortSignal,
+  ): boolean => {
+    const maxY1 = flushAndFix(cvEls, undefined, flushClass);
+    if (sig.aborted || targetY > maxY1) return false;
+    scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+    return true;
+  };
+
+  // Attempt 2: double-rAF retry — gives the browser an additional layout cycle
+  // for cv:auto sections that didn't unskip in time for attempt 1.
+  // Schedules attempt 3 internally if it still fails.
+  const attemptDoubleRafFlush = (
+    targetY: number,
+    sx: number,
+    sig: AbortSignal,
+    raf: (fn: FrameRequestCallback) => void,
+  ): void => {
+    raf(() => raf(() => {
+      if (sig.aborted) return;
+      const fresh = [...document.querySelectorAll<HTMLElement>(cvSelector)];
+      const maxY2 = flushAndFix(fresh, undefined, flushClass);
+      if (targetY <= maxY2) {
+        scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+        return;
+      }
+      attemptVisibilityRetry(fresh, targetY, sx, sig);
+    }));
+  };
+
+  // Attempt 3 (Chrome 125+): contentvisibilityautostatechange fires when a
+  // cv:auto section unskips; re-issue scrollTo if the page finally grew past
+  // targetY. No-op on browsers that don't support the event.
+  const attemptVisibilityRetry = (
+    fresh: HTMLElement[],
+    targetY: number,
+    sx: number,
+    sig: AbortSignal,
+  ): void => {
+    if (!('oncontentvisibilityautostatechange' in HTMLElement.prototype)) return;
+    let scrolled = false;
+    const onUnskip = () => {
+      if (scrolled || sig.aborted) return;
+      if (targetY <= document.documentElement.scrollHeight - innerHeight) {
+        scrolled = true;
+        scrollTo({ top: targetY, left: sx, behavior: 'instant' });
+        fresh.forEach(el => el.removeEventListener('contentvisibilityautostatechange', onUnskip));
+      }
+    };
+    // Re-check sig.aborted before each attach: an abort fired between the rAF
+    // frames or partway through the loop would otherwise leave listeners bound
+    // to an already-aborted signal (browsers still attach, then drop on first
+    // dispatch — silent leak until DOM removal).
+    for (const el of fresh) {
+      if (sig.aborted) break;
+      el.addEventListener('contentvisibilityautostatechange', onUnskip, { signal: sig });
     }
   };
 
   const onAfterSwap = () => {
     try {
-    type HS = { scrollY?: number; scrollX?: number };
     const state = history.state as HS | null;
     if (!warnedMissingScrollY && (state == null || !('scrollY' in state))) {
       warnedMissingScrollY = true;
-      console.warn(
-        '[@alfredwesterveld/astro-spa-restore] history.state.scrollY missing — Astro may have changed its scroll-state shape. Scroll restoration will fall back to top of page.',
+      log(
+        'warn',
+        'history.state.scrollY missing — Astro may have changed its scroll-state shape. Scroll restoration will fall back to top of page.',
       );
     }
     const targetY = state?.scrollY ?? 0;
@@ -203,7 +353,7 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     const hasCachedHeights =
       cachedEntry !== null &&
       cvEls.length === cachedEntry.heights.length &&
-      cvFingerprint(cvEls) === cachedEntry.fingerprint;
+      fingerprintCv(cvEls) === cachedEntry.fingerprint;
     const savedCvHeights = hasCachedHeights ? cachedEntry!.heights : null;
 
     // targetY===0 (top of page, or history.state may legitimately be null on first
@@ -238,63 +388,11 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
         const snap = cvStyleSnaps.get(el);
         if (snap?.intrinsic) el.style.setProperty('contain-intrinsic-size', snap.intrinsic);
       }
-    }, restoringWindowMs, sig, disposeCtrl.signal);
+    }, restoringWindowMs, sig, ensureDisposeCtrl().signal);
 
-    // Attempt 0: bake heights saved by the scrollend listener (captured when scroll
-    // settled at this position — exact layout at save time). Reproduces the layout so
-    // scrollTo(targetY) lands on the correct element. flushAndFix is NOT used here:
-    // it toggles content-visibility:visible which drops cv:auto's implicit containment
-    // → sections measure ~128px shorter → scroll-anchor drift displaces mid-page targets.
-    if (hasCachedHeights && savedCvHeights) {
-      // Snapshot consumer-controlled inline values BEFORE the first mutation so we
-      // can restore them later instead of clobbering with empty strings.
-      snapStyles(cvEls);
-      // Explicit `height` bypasses cv:auto's contain-intrinsic-size resolution timing:
-      // setting contain-intrinsic-size alone doesn't update scrollHeight synchronously
-      // (intersection observer hasn't re-classified sections yet at after-swap time).
-      cvEls.forEach((el, i) => {
-        if (savedCvHeights[i] > 0) el.style.height = `${savedCvHeights[i]}px`;
-      });
-    }
-
-    const maxY0 = document.documentElement.scrollHeight - innerHeight;
-    if (targetY <= maxY0) {
-      scrollTo({ top: targetY, left: sx, behavior: 'instant' });
-      // Defer the explicit-height → intrinsic-size switch until after Alpine.initTree and
-      // any other after-swap listeners have run. Switching synchronously causes a transient
-      // scrollH drop: on-screen sections measure real content immediately, while off-screen
-      // sections lag re-classification under cv:auto. That drop above the viewport, with
-      // overflow-anchor still default, makes the browser shift scrollY to keep the visual
-      // anchor stable — overshooting the restore. Wait one rAF, lock anchors first, then
-      // switch and re-pin atomically.
-      raf(() => {
-        if (sig.aborted) return;
-        // Snapshot before first overflowAnchor mutation (covers the hasCachedHeights=false
-        // path where we never snapshot earlier).
-        snapStyles(cvEls);
-        cvEls.forEach(el => {
-          const r = el.getBoundingClientRect();
-          if (r.bottom <= 0 || r.top >= innerHeight) el.style.overflowAnchor = 'none';
-        });
-        if (hasCachedHeights && savedCvHeights) {
-          cvEls.forEach((el, i) => {
-            // Restore consumer height instead of clearing — the explicit-height
-            // bridge has done its job; intrinsic-size takes over below.
-            const snap = cvStyleSnaps.get(el);
-            el.style.height = snap ? snap.height : '';
-            el.style.removeProperty('contain-intrinsic-size');
-            if (savedCvHeights[i] > 0) {
-              const c = contentHeight(el, savedCvHeights[i]);
-              if (c > 0) el.style.setProperty('contain-intrinsic-size', `auto ${c}px`);
-            }
-          });
-        }
-        scrollTo({ top: targetY, left: sx, behavior: 'instant' });
-        setTimeoutAbortable(() => {
-          // Restore consumer overflowAnchor instead of clearing.
-          restoreStyles(cvEls, ['anchor']);
-        }, anchorResetMs, sig, disposeCtrl.signal);
-      });
+    // Attempt 0: bake cached heights and try to land via the scrollend-captured
+    // layout. Returns true if we landed (and scheduled the deferred restore).
+    if (attemptCachedHeights(cvEls, savedCvHeights, hasCachedHeights, targetY, sx, sig, raf)) {
       return;
     }
 
@@ -306,49 +404,16 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     }
     if (cvEls.length === 0) return;
 
-    // Attempt 1: synchronous in after-swap microtask (same task as router's scrollTo)
-    const maxY1 = flushAndFix(cvEls, undefined, flushClass);
-    if (!sig.aborted && targetY <= maxY1) {
-      scrollTo({ top: targetY, left: sx, behavior: 'instant' });
-      return;
-    }
+    // Attempt 1: synchronous flush in after-swap microtask.
+    if (attemptSyncFlush(cvEls, targetY, sx, sig)) return;
 
-    // Attempt 2: double-rAF retry (gives browser an additional layout cycle)
-    raf(() => raf(() => {
-      if (sig.aborted) return;
-      const fresh = [...document.querySelectorAll<HTMLElement>(cvSelector)];
-      const maxY2 = flushAndFix(fresh, undefined, flushClass);
-      if (targetY <= maxY2) {
-        scrollTo({ top: targetY, left: sx, behavior: 'instant' });
-        return;
-      }
-      // Attempt 3 (Chrome 125+): contentvisibilityautostatechange fires when a section
-      // unskips; re-issue scrollTo if page finally grew past targetY.
-      if ('oncontentvisibilityautostatechange' in HTMLElement.prototype) {
-        let scrolled = false;
-        const onUnskip = () => {
-          if (scrolled || sig.aborted) return;
-          if (targetY <= document.documentElement.scrollHeight - innerHeight) {
-            scrolled = true;
-            scrollTo({ top: targetY, left: sx, behavior: 'instant' });
-            fresh.forEach(el => el.removeEventListener('contentvisibilityautostatechange', onUnskip));
-          }
-        };
-        // Re-check sig.aborted before each attach: an abort fired between the rAF
-        // frames or partway through the loop would otherwise leave listeners bound
-        // to an already-aborted signal (browsers still attach, then drop on first
-        // dispatch — silent leak until DOM removal).
-        for (const el of fresh) {
-          if (sig.aborted) break;
-          el.addEventListener('contentvisibilityautostatechange', onUnskip, { signal: sig });
-        }
-      }
-    }));
+    // Attempt 2 + 3: double-rAF retry, then contentvisibilityautostatechange wait.
+    attemptDoubleRafFlush(targetY, sx, sig, raf);
     } catch (err) {
       // Re-emit, don't swallow: a throw here (poisoned history.state, broken
       // querySelectorAll, consumer styles that crash getComputedStyle) would
       // otherwise break the swap and surface as an uncaught exception.
-      console.error('[astro-spa-restore]', err);
+      log('error', 'after-swap-handler-throw', err);
     }
   };
 
@@ -365,8 +430,9 @@ export function installCvScrollRestore(opts: CvOpts = {}): () => void {
     cvRestoreCtrl.abort();
     // Aborts every tracked setTimeoutAbortable callback (cvRestoring reset + anchor
     // reset). Without this, late timers can mutate state after the integration is
-    // disposed.
-    disposeCtrl.abort();
+    // disposed. May be undefined if dispose() is called before any swap was
+    // observed (MPA page or unused integration) — nothing to abort in that case.
+    disposeCtrl?.abort();
     if (scrollendTimer) clearTimeout(scrollendTimer);
   };
 }

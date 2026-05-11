@@ -1,3 +1,5 @@
+import { log } from './log';
+
 export interface AlpineOpts {
   /** Attribute marking subtrees that survive ClientRouter swaps. Default 'data-astro-transition-persist'. */
   persistAttribute?: string;
@@ -31,7 +33,7 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
   const warnAlpineMissing = (phase: 'before-swap' | 'after-swap'): void => {
     if (warnedMissing) return;
     warnedMissing = true;
-    console.warn(`[astro-spa-restore] Alpine missing on astro:${phase}`);
+    log('warn', `Alpine missing on astro:${phase}`);
   };
 
   const onBeforeSwap = () => {
@@ -67,7 +69,7 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
       // Re-emit, don't swallow: a throw inside a consumer's Alpine cleanup
       // hook (or a poisoned mutateDom) shouldn't break the swap or surface as
       // an uncaught exception that fails e2e runners.
-      console.error('[astro-spa-restore]', err);
+      log('error', 'before-swap-handler-throw', err);
     }
   };
 
@@ -81,7 +83,7 @@ export function installAlpineLifecycle(opts: AlpineOpts = {}): () => void {
       warnedMissing = false;
       Alpine.initTree(document.body);
     } catch (err) {
-      console.error('[astro-spa-restore]', err);
+      log('error', 'after-swap-handler-throw', err);
     }
   };
 
